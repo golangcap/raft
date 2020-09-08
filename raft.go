@@ -663,10 +663,10 @@ func (r *Raft) runFollower() {
 		case <-heartbeatTimer:
 			// Restart the heartbeat timer
 			heartbeatTimer = randomTimeout(r.conf.HeartbeatTimeout)
-
 			// Check if we have had a successful contact
 			lastContact := r.LastContact()
 			if time.Now().Sub(lastContact) < r.conf.HeartbeatTimeout {
+				r.logger.Printf("[DEBUG] raft: last contack < heartveat timeout")
 				continue
 			}
 

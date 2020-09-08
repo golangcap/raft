@@ -147,3 +147,42 @@ func (r *Raft) runFollower() {
 - `<-r.peerCh`, 处理Raft节点加入或退出Raft集群
 - `<-heartbeatTimer`, 心跳超时计时器，当事件到来会发起Leader选举
 - `<-r.shutdownCh`, TODO
+
+### heartbeat timeout
+
+`<-heartbeatTimer` 到期后, Follower转变为Candidate发起选举
+```go
+// Restart the heartbeat timer
+heartbeatTimer = randomTimeout(r.conf.HeartbeatTimeout)
+
+// Check if we have had a successful contact
+lastContact := r.LastContact()
+if time.Now().Sub(lastContact) < r.conf.HeartbeatTimeout {
+	continue
+}
+
+// Heartbeat failed! Transition to the candidate state
+lastLeader := r.Leader()
+r.setLeader("")
+if len(r.peers) == 0 && !r.conf.EnableSingleNode {
+	if !didWarn {
+		r.logger.Printf("[WARN] raft: EnableSingleNode disabled, and no known peers. Aborting election.")
+		didWarn = true
+	}
+} else {
+	r.logger.Printf(`[WARN] raft: Heartbeat timeout from %q reached, starting election`, lastLeader)
+
+	metrics.IncrCounter([]string{"raft", "transition", "heartbeat_timeout"}, 1)
+	r.setState(Candidate)
+	return
+}
+```
+
+1. 重置选举计时器
+2. 如果最近一次的通信时间否小于配置的`HeartbeatTimeout` 则不发起选举, 目的是防止有通信成功的情况下, follower在一个心跳超时周期内发起过多选举导致leader一直选不出来的情况
+3. 清空leader状态
+4. 如果当前集群是单节点, 同时配置了不允许单节点节点, 则不发起选举
+5. 设置节点状态为`Candidate`
+
+
+### convert candidate
