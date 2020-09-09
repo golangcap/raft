@@ -1642,8 +1642,8 @@ type voteResult struct {
 func (r *Raft) electSelf() <-chan *voteResult {
 	// Create a response channel
 	respCh := make(chan *voteResult, len(r.peers)+1)
-
 	// Increment the term
+
 	r.setCurrentTerm(r.getCurrentTerm() + 1)
 
 	// Construct the request
