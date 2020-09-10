@@ -768,6 +768,7 @@ func (r *Raft) runLeader() {
 	r.logger.Printf("[INFO] raft: %v entering Leader state", r)
 	metrics.IncrCounter([]string{"raft", "state", "leader"}, 1)
 
+	// 主要用于测试, 外部可以从leaderCh知道此刻有leader选出了
 	// Notify that we are the leader
 	asyncNotifyBool(r.leaderCh, true)
 
@@ -873,21 +874,37 @@ func (r *Raft) runLeader() {
 
 // startReplication is a helper to setup state and start async replication to a peer.
 func (r *Raft) startReplication(peer string) {
+	// 获取最后一个日志条目的index
 	lastIdx := r.getLastIndex()
+	// follower replication 状态
 	s := &followerReplication{
+		// follower地址
 		peer:        peer,
+		// follower将像该结构填入更多的信息来帮助
+		// leader 优化NextIndex
 		inflight:    r.leaderState.inflight,
+		// TODO
 		stopCh:      make(chan uint64, 1),
+		// TODO
 		triggerCh:   make(chan struct{}, 1),
+		// leader 当前term
 		currentTerm: r.getCurrentTerm(),
+		// follower 当前复制到的日志条目最大的index
 		matchIndex:  0,
+		// leader 将要发给follower的下一个日志条目的index
 		nextIndex:   lastIdx + 1,
+		// 与follower最近一次通信的时间
 		lastContact: time.Now(),
+		// TODO
 		notifyCh:    make(chan struct{}, 1),
+		// TODO
 		stepDown:    r.leaderState.stepDown,
 	}
+	// follower replication 状态存储到replState结构
 	r.leaderState.replState[peer] = s
+	// 并行启动日志复制
 	r.goFunc(func() { r.replicate(s) })
+	// 异步通知日志复制循环可以开始复制了
 	asyncNotifyCh(s.triggerCh)
 }
 

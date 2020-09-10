@@ -459,6 +459,102 @@ if grantedVotes >= votesNeeded {
 这里通过开始设置的timeout触发, 当接收到 `<-electionTimer` 的超时通知时, 就需要退出此次选举
 
 #### 处理RequestVote
+Candidate 发出RequestVote请求后, 参与投票的成员需要处理RPC请求. 任何FSM state都需要处理该RPC, 即:
+- leader
+- follower
+- candidate
+
+都需要处理RequstVote请求.
+
+所有的RCP请求通过 `rpc := <-r.rpcCh` 这个channel获得, 当有请求写入后, 调用 `processRPC` 处理, `processRPC(rpc)` 内部会判断rpc的类型, 使用 `requestVote` 方法处理
+
+```go
+// requestVote is invoked when we get an request vote RPC call.
+func (r *Raft) requestVote(rpc RPC, req *RequestVoteRequest) {
+	defer metrics.MeasureSince([]string{"raft", "rpc", "requestVote"}, time.Now())
+	r.observe(*req)
+
+	// Setup a response
+	resp := &RequestVoteResponse{
+		Term:    r.getCurrentTerm(),
+		Peers:   encodePeers(r.peers, r.trans),
+		Granted: false,
+	}
+	var rpcErr error
+	defer func() {
+		rpc.Respond(resp, rpcErr)
+	}()
+
+	// Check if we have an existing leader [who's not the candidate]
+	candidate := r.trans.DecodePeer(req.Candidate)
+	if leader := r.Leader(); leader != "" && leader != candidate {
+		r.logger.Printf("[WARN] raft: Rejecting vote request from %v since we have a leader: %v",
+			candidate, leader)
+		return
+	}
+
+	// Ignore an older term
+	if req.Term < r.getCurrentTerm() {
+		return
+	}
+
+	// Increase the term if we see a newer one
+	if req.Term > r.getCurrentTerm() {
+		// Ensure transition to follower
+		r.setState(Follower)
+		r.setCurrentTerm(req.Term)
+		resp.Term = req.Term
+	}
+
+	// Check if we have voted yet
+	lastVoteTerm, err := r.stable.GetUint64(keyLastVoteTerm)
+	if err != nil && err.Error() != "not found" {
+		r.logger.Printf("[ERR] raft: Failed to get last vote term: %v", err)
+		return
+	}
+	lastVoteCandBytes, err := r.stable.Get(keyLastVoteCand)
+	if err != nil && err.Error() != "not found" {
+		r.logger.Printf("[ERR] raft: Failed to get last vote candidate: %v", err)
+		return
+	}
+
+	// Check if we've voted in this election before
+	if lastVoteTerm == req.Term && lastVoteCandBytes != nil {
+		r.logger.Printf("[INFO] raft: Duplicate RequestVote for same term: %d", req.Term)
+		if bytes.Compare(lastVoteCandBytes, req.Candidate) == 0 {
+			r.logger.Printf("[WARN] raft: Duplicate RequestVote from candidate: %s", req.Candidate)
+			resp.Granted = true
+		}
+		return
+	}
+
+	// Reject if their term is older
+	lastIdx, lastTerm := r.getLastEntry()
+	if lastTerm > req.LastLogTerm {
+		r.logger.Printf("[WARN] raft: Rejecting vote request from %v since our last term is greater (%d, %d)",
+			candidate, lastTerm, req.LastLogTerm)
+		return
+	}
+
+	if lastTerm == req.LastLogTerm && lastIdx > req.LastLogIndex {
+		r.logger.Printf("[WARN] raft: Rejecting vote request from %v since our last index is greater (%d, %d)",
+			candidate, lastIdx, req.LastLogIndex)
+		return
+	}
+
+	// Persist a vote for safety
+	if err := r.persistVote(req.Term, req.Candidate); err != nil {
+		r.logger.Printf("[ERR] raft: Failed to persist vote: %v", err)
+		return
+	}
+
+	resp.Granted = true
+	r.setLastContact()
+	return
+}
+
+```
+
 
 
 ### Become Leader

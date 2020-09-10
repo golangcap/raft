@@ -89,9 +89,10 @@ func (r *Raft) replicate(s *followerReplication) {
 	// Start an async heartbeating routing
 	stopHeartbeat := make(chan struct{})
 	defer close(stopHeartbeat)
+	// 单独的一个goroutine异步执行心跳
 	r.goFunc(func() { r.heartbeat(s, stopHeartbeat) })
 
-RPC:
+RPC: // AppendEntries RPC 发送状态
 	shouldStop := false
 	for !shouldStop {
 		select {
@@ -102,6 +103,7 @@ RPC:
 			}
 			return
 		case <-s.triggerCh:
+			// 获取leader最后一个日志
 			lastLogIdx, _ := r.getLastLog()
 			shouldStop = r.replicateTo(s, lastLogIdx)
 		case <-randomTimeout(r.conf.CommitTimeout):
@@ -116,7 +118,7 @@ RPC:
 	}
 	return
 
-PIPELINE:
+PIPELINE: // AppendEntries Pipeline 模式
 	// Disable until re-enabled
 	s.allowPipeline = false
 
