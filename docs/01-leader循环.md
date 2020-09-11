@@ -1,3 +1,6 @@
+
+## Leader loop
+
 当节点成为leader后, 会运行`runLeader`
 ```go
 func (r *Raft) runLeader() {
@@ -122,6 +125,11 @@ r.leaderState.notify = make(map[*verifyFuture]struct{})
 // leader 退位channel
 r.leaderState.stepDown = make(chan struct{}, 1)
 ```
+ 
+之后leader会启动日志复制的goroutine, 然后分发一个noop日志项, 最后运行 `r.leaderLoop()`
+
+
+
 
 然后leader开始复制日志到所有的peer
 ```go

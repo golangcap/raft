@@ -81,8 +81,8 @@ func (r *Raft) RegisterObserver(or *Observer) {
 	r.observersLock.Lock()
 	defer r.observersLock.Unlock()
 	r.observers[or.id] = or
-}
 
+}
 // DeregisterObserver deregisters an observer.
 func (r *Raft) DeregisterObserver(or *Observer) {
 	r.observersLock.Lock()

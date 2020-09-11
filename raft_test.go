@@ -672,6 +672,8 @@ func TestRaft_SingleNode(t *testing.T) {
 		c.FailNowf("[ERR] err: %v", err)
 	}
 
+	c.logger.Println("fsm", c.fsms[0].logs)
+
 	// Check the response
 	if future.Response().(int) != 1 {
 		c.FailNowf("[ERR] bad response: %v", future.Response())
@@ -700,10 +702,13 @@ func TestRaft_TripleNode(t *testing.T) {
 
 	// Should be able to apply
 	future := leader.Apply([]byte("test"), c.conf.CommitTimeout)
+	fmt.Printf("[My Debug] fsm = %v\n", c.fsms[0].logs)
 	if err := future.Error(); err != nil {
 		c.FailNowf("[ERR] err: %v", err)
 	}
+
 	c.WaitForReplication(1)
+	fmt.Printf("[My Debug] fsm = %v\n", c.fsms[0].logs)
 }
 
 func TestRaft_LeaderFail(t *testing.T) {

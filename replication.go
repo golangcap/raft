@@ -94,6 +94,7 @@ func (r *Raft) replicate(s *followerReplication) {
 
 RPC: // AppendEntries RPC 发送状态
 	shouldStop := false
+	// 日志复制终止条件
 	for !shouldStop {
 		select {
 		case maxIndex := <-s.stopCh:
@@ -102,10 +103,16 @@ RPC: // AppendEntries RPC 发送状态
 				r.replicateTo(s, maxIndex)
 			}
 			return
+
+			// 收到触发日志复制的channel, 在startReplication 由
+			// asyncNotify 异步触发
 		case <-s.triggerCh:
-			// 获取leader最后一个日志
+			r.logger.Println("[MyDebug] trigger")
+			// 获取leader当前日志条目中最后一个日志的index
 			lastLogIdx, _ := r.getLastLog()
+			// 进入日志复制循环, 同时该方法会返回是否复制结束
 			shouldStop = r.replicateTo(s, lastLogIdx)
+			r.logger.Printf("[MyDebug] shouldStop = %v", shouldStop)
 		case <-randomTimeout(r.conf.CommitTimeout):
 			lastLogIdx, _ := r.getLastLog()
 			shouldStop = r.replicateTo(s, lastLogIdx)
@@ -140,7 +147,7 @@ func (r *Raft) replicateTo(s *followerReplication, lastIndex uint64) (shouldStop
 	var req AppendEntriesRequest
 	var resp AppendEntriesResponse
 	var start time.Time
-START:
+START: // 开始日志复制状态
 	// Prevent an excessive retry rate on errors
 	if s.failures > 0 {
 		select {
@@ -150,13 +157,16 @@ START:
 	}
 
 	// Setup the request
+	// 准备参数, 主要是计算PrevLogIndex和PrevTermIndex
 	if err := r.setupAppendEntries(s, &req, s.nextIndex, lastIndex); err == ErrLogNotFound {
+		r.logger.Println("[Debug] ErrLogNoteFound goto SEND_SNAP")
 		goto SEND_SNAP
 	} else if err != nil {
 		return
 	}
 
 	// Make the RPC call
+	// 发送AppendEntries RPC
 	start = time.Now()
 	if err := r.trans.AppendEntries(s.peer, &req, &resp); err != nil {
 		r.logger.Printf("[ERR] raft: Failed to AppendEntries to %v: %v", s.peer, err)
@@ -166,12 +176,14 @@ START:
 	appendStats(s.peer, start, float32(len(req.Entries)))
 
 	// Check for a newer term, stop running
+	// 任期内Leader Term落后, 可能发生了网络分区或其他情况, Leader应该step down
 	if resp.Term > req.Term {
 		r.handleStaleTerm(s)
 		return true
 	}
 
 	// Update the last contact
+	// 设置 leader -> follower 沟通的最后一次通信时间
 	s.setLastContact()
 
 	// Update s based on success
@@ -183,6 +195,7 @@ START:
 		s.failures = 0
 		s.allowPipeline = true
 	} else {
+		// 处理日志复制冲突的情况
 		s.nextIndex = max(min(s.nextIndex-1, resp.LastLog+1), 1)
 		s.matchIndex = s.nextIndex - 1
 		if resp.NoRetryBackoff {
@@ -192,6 +205,8 @@ START:
 		}
 		r.logger.Printf("[WARN] raft: AppendEntries to %v rejected, sending older logs (next: %d)", s.peer, s.nextIndex)
 	}
+
+	r.logger.Println("[Debug] Start Repl")
 
 CHECK_MORE:
 	// Check if there are more logs to replicate
@@ -210,6 +225,7 @@ SEND_SNAP:
 		return
 	}
 
+	r.logger.Println("[Debug] Check More")
 	// Check if there is more to replicate
 	goto CHECK_MORE
 }
@@ -509,9 +525,13 @@ func (r *Raft) handleStaleTerm(s *followerReplication) {
 // AppendEntries RPC.
 func updateLastAppended(s *followerReplication, req *AppendEntriesRequest) {
 	// Mark any inflight logs as committed
+	// 复制到follower的日志序列
 	if logs := req.Entries; len(logs) > 0 {
+		// 计算日志序列开始和结束index
 		first := logs[0]
 		last := logs[len(logs)-1]
+		// 尝试提交, 之所以是尝试, 是因为复制到所有的peer过程中, 只要peer
+		// 响应成功, 就开始提交, 但有可能没有复制到大多数, 所以提交会失败
 		s.inflight.CommitRange(first.Index, last.Index)
 
 		// Update the indexes

@@ -2,6 +2,7 @@ package raft
 
 import (
 	"container/list"
+	"fmt"
 	"sync"
 )
 
@@ -93,6 +94,7 @@ func (i *inflight) start(l *logFuture) {
 	if i.minCommit == 0 {
 		i.minCommit = idx
 	}
+	fmt.Printf("[My Debug] minCommit = %d\n", i.minCommit)
 	i.commit(idx)
 }
 
@@ -155,7 +157,7 @@ func (i *inflight) CommitRange(minIndex, maxIndex uint64) {
 
 	// Update the minimum index
 	minIndex = max(i.minCommit, minIndex)
-
+	fmt.Printf("[My Debug] CommitRange minIndex = %d\n", minIndex)
 	// Commit each index
 	for idx := minIndex; idx <= maxIndex; idx++ {
 		i.commit(idx)
@@ -163,7 +165,7 @@ func (i *inflight) CommitRange(minIndex, maxIndex uint64) {
 }
 
 // commit is used to commit a single index. Must be called with the lock held.
-func (i *inflight) commit(index uint64) {
+func (i *inflight)  commit(index uint64) {
 	op, ok := i.operations[index]
 	if !ok {
 		// Ignore if not in the map, as it may be committed already
@@ -204,9 +206,12 @@ NOTIFY:
 		op = i.operations[i.minCommit]
 		if op.policy.IsCommitted() {
 			index = i.minCommit
+			fmt.Printf("[My Debug] commit next index = %d\n", index)
 			goto NOTIFY
 		}
 	}
+
+	fmt.Printf("[My Debug] minCommit = %d, maxConmmit = %d\n", i.minCommit, i.maxCommit)
 
 	// Async notify of ready operations
 	asyncNotifyCh(i.commitCh)

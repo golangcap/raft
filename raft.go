@@ -70,8 +70,8 @@ type leaderState struct {
 	replState map[string]*followerReplication
 	notify    map[*verifyFuture]struct{}
 	stepDown  chan struct{}
-}
 
+}
 // Raft implements a Raft node.
 type Raft struct {
 	raftState
@@ -851,6 +851,7 @@ func (r *Raft) runLeader() {
 	// we use a LogAddPeer with our peerset. This acts like
 	// a no-op as well, but when doing an initial bootstrap, ensures
 	// that all nodes share a common peerset.
+	// NO-OP 日志项
 	peerSet := append([]string{r.localAddr}, r.peers...)
 	noop := &logFuture{
 		log: Log{
@@ -922,15 +923,20 @@ func (r *Raft) leaderLoop() {
 	lease := time.After(r.conf.LeaderLeaseTimeout)
 	for r.getState() == Leader {
 		select {
+		// 收到rpc请求, 处理rpc请求
 		case rpc := <-r.rpcCh:
 			r.processRPC(rpc)
 
+			// 收到stepDown channel, leader 退位, 状态转变为follower
 		case <-r.leaderState.stepDown:
 			r.setState(Follower)
 
+			// 收到日志提交channel, 提交日志
 		case <-r.leaderState.commitCh:
 			// Get the committed messages
+			// committed 是一个链表, 记录了当前需要提交的日志
 			committed := r.leaderState.inflight.Committed()
+			// 遍历committed链表, 提交日志
 			for e := committed.Front(); e != nil; e = e.Next() {
 				// Measure the commit time
 				commitLog := e.Value.(*logFuture)
@@ -939,6 +945,7 @@ func (r *Raft) leaderLoop() {
 				// Increment the commit index
 				idx := commitLog.log.Index
 				r.setCommitIndex(idx)
+				// 处理需要提交的log
 				r.processLogs(idx, commitLog)
 			}
 
@@ -965,6 +972,7 @@ func (r *Raft) leaderLoop() {
 
 		case newLog := <-r.applyCh:
 			// Group commit, gather all the ready commits
+			// 分组提交优化
 			ready := []*logFuture{newLog}
 			for i := 0; i < r.conf.MaxAppendEntries; i++ {
 				select {
@@ -1149,19 +1157,31 @@ func (r *Raft) dispatchLogs(applyLogs []*logFuture) {
 	now := time.Now()
 	defer metrics.MeasureSince([]string{"raft", "leader", "dispatchLog"}, now)
 
+	// leader当前term
 	term := r.getCurrentTerm()
+	// leader当前日志条目中的最后一条日志的index
 	lastIndex := r.getLastIndex()
+	// 创建需要复制到peer的日志
+	// applyLogs中的内容不完整, 需要在做一次填充后设置
 	logs := make([]*Log, len(applyLogs))
 
+	// 比如 [1, 10], lastIndex + 0 + 1, ...., lastIndex + 9 + 1
 	for idx, applyLog := range applyLogs {
+		// 复制时间
 		applyLog.dispatch = now
+		// 该日志的索引 = leader last log index + logs on idx + 1
 		applyLog.log.Index = lastIndex + uint64(idx) + 1
+		// 该日志所处的term
 		applyLog.log.Term = term
+		// 日志提交策略, 这里是大多数apply后就提交日志
 		applyLog.policy = newMajorityQuorum(len(r.peers) + 1)
+		// 设置日志
 		logs[idx] = &applyLog.log
 	}
 
 	// Write the log entry locally
+	// 写入本地日志, 这些日志并没有提交, 只是存储到本地
+	// 由Leader决定什么时候提交更安全
 	if err := r.logs.StoreLogs(logs); err != nil {
 		r.logger.Printf("[ERR] raft: Failed to commit logs: %v", err)
 		for _, applyLog := range applyLogs {
@@ -1172,7 +1192,11 @@ func (r *Raft) dispatchLogs(applyLogs []*logFuture) {
 	}
 
 	// Add this to the inflight logs, commit
+	r.logger.Printf("[My Debug] start commit apply logs = %v", applyLogs)
+
 	r.leaderState.inflight.StartAll(applyLogs)
+
+	r.logger.Println("[My Debug] start commit apply logs done!")
 
 	// Update the last log since it's on disk now
 	r.setLastLog(lastIndex+uint64(len(applyLogs)), term)
@@ -1201,10 +1225,12 @@ func (r *Raft) processLogs(index uint64, future *logFuture) {
 
 		} else {
 			l := new(Log)
+			// 获取本地存储介质上的日志
 			if err := r.logs.GetLog(idx, l); err != nil {
 				r.logger.Printf("[ERR] raft: Failed to get log at %d: %v", idx, err)
 				panic(err)
 			}
+			// 处理日志
 			r.processLog(l, nil, false)
 		}
 
@@ -1224,6 +1250,7 @@ func (r *Raft) processLog(l *Log, future *logFuture, precommit bool) (stepDown b
 	case LogCommand:
 		// Forward to the fsm handler
 		select {
+		// 通知fsm提交
 		case r.fsmCommitCh <- commitTuple{l, future}:
 		case <-r.shutdownCh:
 			if future != nil {
